@@ -255,6 +255,29 @@ async function adminSendMail(ctx, token, refs, subject, body, modele) {
   await addLog(modele || 'Message libre', subject, targets.map(a => a.ref), failed);
   return { sent, failed, quota: null };
 }
+async function adminUpdateAbstract(ctx, token, ref, o) {
+  auth(token);
+  const a = await hGet(K.abs, ref);
+  if (!a) fail('Résumé introuvable : ' + ref);
+  o = o || {};
+  const editable = ABS_FIELDS.filter(f => f !== 'engagements');
+  editable.forEach(f => { if (f in o) a[f] = clean(o[f], f === 'titre' ? 300 : 4000); });
+  REQUIRED.forEach(f => { if (!a[f]) fail('Champ obligatoire vide : ' + f + '.'); });
+  if (!validEmail(a.email)) fail('Adresse e-mail non valide.');
+  a.email = a.email.toLowerCase();
+  a.modifie = nowIso();
+  await hSet(K.abs, ref, a);
+  return a;
+}
+async function adminDeleteAbstract(ctx, token, ref) {
+  auth(token);
+  const a = await hGet(K.abs, ref);
+  if (!a) fail('Résumé introuvable : ' + ref);
+  await db().hdel(K.abs, ref);
+  await db().lpush(`${NS}:trash`, JSON.stringify(Object.assign({}, a, { supprime_le: nowIso() })));
+  await db().ltrim(`${NS}:trash`, 0, 999);
+  return { ok: true, ref };
+}
 async function adminTestMail(ctx, token, to) {
   auth(token);
   to = clean(to, 200);
@@ -290,7 +313,7 @@ async function adminReply(ctx, token, id, text) {
 }
 
 const ACTIONS = { getPublicConfig, submitAbstract, getStatus, sendContact, adminLogin, adminData,
-  adminSaveSettings, adminDecide, adminSendMail, adminMarkRead, adminReply, adminTestMail };
+  adminSaveSettings, adminDecide, adminSendMail, adminMarkRead, adminReply, adminTestMail, adminUpdateAbstract, adminDeleteAbstract };
 
 /* ---------------- Handler Vercel ---------------- */
 module.exports = async (req, res) => {
