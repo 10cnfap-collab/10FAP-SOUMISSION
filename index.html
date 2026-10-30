@@ -343,7 +343,7 @@ const fmtDay=d=>d.toLocaleDateString("fr-FR",{day:"numeric",month:"short"});
 const deadlineLabel=c=>{ const d=new Date(c.deadline); return isNaN(d)?c.deadline:d.toLocaleDateString("fr-FR",{day:"numeric",month:"long",year:"numeric"})+" à "+d.toLocaleTimeString("fr-FR",{hour:"2-digit",minute:"2-digit"}).replace(":","h"); };
 const isOpen=c=> c.submissionMode==="open" ? true : c.submissionMode==="closed" ? false : Date.now()<=new Date(c.deadline).getTime();
 const chip=s=>`<span class="chip s-${esc(s)}">${esc((STATUS[s]||STATUS.en_attente).label)}</span>`;
-function toast(m){ const t=document.createElement("div"); t.className="toast"; t.setAttribute("role","status"); t.textContent=m; document.body.appendChild(t); setTimeout(()=>t.remove(),3400); }
+function toast(m,ms){ $$(".toast").forEach(x=>x.remove()); const t=document.createElement("div"); t.className="toast"; t.setAttribute("role","status"); t.textContent=m; t.onclick=()=>t.remove(); document.body.appendChild(t); setTimeout(()=>t.remove(),ms||(m.length>90?9000:3400)); }
 const validEmail=s=>/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(String(s).trim());
 function fillTpl(text,a,c){
   const v={prenom:a.prenom,nom:a.nom,ref:a.ref,titre:a.titre,thematique:a.thematique,mode_souhaite:a.mode,decision:(STATUS[a.decision]||{}).label||"",
@@ -659,7 +659,7 @@ function adminCom(){
   </div>
   <div style="display:flex;flex-direction:column;gap:12px"><div><span class="section-tag">Aperçu · ${R.length?"premier destinataire":"exemple"}</span></div>
     ${mailPreview(fillTpl(C.subject,ex,CFG),fillTpl(C.body,ex,CFG),CFG,ex.email||"auteur@exemple.dz")}
-    <div class="card"><h3 style="font-size:16px;margin-bottom:8px">Journal des envois</h3>${log.length?`<div class="feed">${log.slice(0,12).map(l=>`<div><span class="t"><span><b>${esc(l.objet)}</b></span><span class="small">${esc(fmtDate(l.date))} · ${esc(l.modele||"Message libre")}</span></span><span class="mono">${l.nb} ✉</span></div>`).join("")}</div>`:`<p class="small" style="margin:0">Aucun envoi groupé pour l'instant.</p>`}</div></div></div>`;
+    <div class="card"><h3 style="font-size:16px;margin-bottom:8px">Journal des envois</h3>${log.length?`<div class="feed">${log.slice(0,12).map(l=>`<div><span class="t"><span><b>${esc(l.objet)}</b></span><span class="small">${esc(fmtDate(l.date))} · ${esc(l.modele||"Message libre")}</span>${l.echecs?`<span class="small" style="color:var(--danger);white-space:normal">Échec : ${esc(l.echecs)}</span>`:""}</span><span class="mono">${l.nb} ✉</span></div>`).join("")}</div>`:`<p class="small" style="margin:0">Aucun envoi groupé pour l'instant.</p>`}</div></div></div>`;
 }
 function tplOptions(sel){ const g=k=>CFG.templates.filter(t=>t.kind===k).map(t=>`<option value="${esc(t.id)}"${t.id===sel?" selected":""}>${esc(t.name)}</option>`).join("");
   return `<optgroup label="Communication">${g("com")}</optgroup><optgroup label="Décisions et accusés">${g("auto")}</optgroup><option value="__free"${sel==="__free"?" selected":""}>Message libre</option>`; }
@@ -711,6 +711,10 @@ function adminCfg(){
     <label class="opt"><input type="checkbox" id="p-ack"${c.ackAuto?" checked":""}><span>Envoyer l'accusé de réception à chaque soumission</span></label>
     <label class="opt"><input type="checkbox" id="p-notify"${c.notifyDefault?" checked":""}><span>Cocher par défaut « Informer l'auteur » lors d'une décision</span></label>
     <p class="small" style="margin:0">Les textes se modifient dans l'onglet Modèles d'e-mails.</p></div>
+  <div class="card" style="display:flex;flex-direction:column;gap:10px"><h3 style="font-size:18px">Tester l'envoi d'e-mails</h3>
+    <p class="small" style="margin:0">Envoie un e-mail de test et affiche la raison exacte en cas d'échec.</p>
+    <div class="row"><input class="box" id="p-testto" type="email" placeholder="votre.adresse@exemple.dz" style="flex:1;min-width:220px"><button class="btn ghost" id="p-test">Envoyer un e-mail de test</button></div>
+    <div id="p-testout"></div></div>
   <div class="row"><button class="btn" id="p-save">Enregistrer les paramètres</button></div>`;
 }
 
@@ -832,7 +836,7 @@ function bindAdmin(){
           r.sent+=p.sent; r.failed=r.failed.concat(p.failed||[]); if(p.quota!=null) r.quota=p.quota; }
         if(!LIVE){ S.data.log=store.get(LK.log,[]); } else { S.data=await API.adminData(S.token); }
         if(r.quota!=null) S.data.quota=r.quota;
-        toast(`${r.sent} e-mail${r.sent>1?"s":""} envoyé${r.sent>1?"s":""}${r.failed&&r.failed.length?` · ${r.failed.length} échec(s)`:""}.`); S.comp=newComp(); S.sel.clear(); render(); }
+        if(r.failed&&r.failed.length) toast(`${r.sent} envoyé${r.sent>1?"s":""} · ${r.failed.length} échec(s). Raison : ${r.failed[0].error}`,12000); else toast(`${r.sent} e-mail${r.sent>1?"s":""} envoyé${r.sent>1?"s":""}.`); S.comp=newComp(); S.sel.clear(); render(); }
       catch(e){ toast(e.message); C.confirm=false; render(); } });
   }
   if(T==="tpl"){
@@ -854,6 +858,15 @@ function bindAdmin(){
       try{ const m=await API.adminReply(S.token,S.openMsg,txt); Object.assign(S.data.messages.find(x=>x.id===S.openMsg),m); render(); toast(LIVE?"Réponse envoyée par e-mail.":"Réponse enregistrée (mode démo)."); }catch(e){ toast(e.message); b.disabled=false; } });
   }
   if(T==="cfg"){
+    $("#p-test").onclick=async()=>{ const out=$("#p-testout"),b=$("#p-test"),to=$("#p-testto").value.trim();
+      if(!validEmail(to)){ out.innerHTML=`<div class="notice bad">Saisissez une adresse e-mail valide.</div>`; return; }
+      if(!LIVE){ out.innerHTML=`<div class="notice warn">Mode démo : aucun e-mail n'est envoyé.</div>`; return; }
+      b.disabled=true; b.textContent="Envoi…"; out.innerHTML="";
+      try{ const r=await API.adminTestMail(S.token,to); const i=r.info||{};
+        out.innerHTML=r.ok?`<div class="notice info"><b>E-mail envoyé à ${esc(to)}.</b> Vérifiez la boîte de réception et les spams.</div>`
+          :`<div class="notice bad"><b>Échec :</b> ${esc(r.error)}<br><span class="small">Détail technique : ${esc(r.raw)}<br>Serveur ${esc(i.host)}:${esc(i.port)} · identifiant ${esc(i.user)} · expéditeur ${esc(i.from)}</span></div>`; }
+      catch(e){ out.innerHTML=`<div class="notice bad">${esc(e.message)}</div>`; }
+      b.disabled=false; b.textContent="Envoyer un e-mail de test"; };
     $("#p-save").onclick=async()=>{ const th=$("#p-themes").value.split("\n").map(s=>s.trim()).filter(Boolean);
       if(!th.length){ toast("Indiquez au moins une thématique."); return; }
       Object.assign(CFG,{submissionMode:($("input[name=smode]:checked")||{}).value||"auto",deadline:$("#p-dl").value||CFG.deadline,maxWords:Math.max(100,+$("#p-max").value||300),
