@@ -1,0 +1,10 @@
+{
+  "name": "fap10-resumes",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Plateforme de soumission des résumés – 10ème Congrès National de la Fédération Algérienne de Pharmacie",
+  "dependencies": {
+    "@upstash/redis": "1.34.3",
+    "nodemailer": "6.9.16"
+  }
+}
