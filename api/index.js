@@ -133,9 +133,19 @@ async function sendMail(ctx, to, subject, text, c) {
   if (!_smtp) {
     const port = Number(process.env.SMTP_PORT || 465);
     _smtp = nodemailer.createTransport({ host: process.env.SMTP_HOST, port, secure: port === 465,
-      auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }, pool: true, maxConnections: 3 });
+      auth: { user: String(process.env.SMTP_USER).trim(), pass: String(process.env.SMTP_PASS).trim() },
+      connectionTimeout: 15000, greetingTimeout: 15000, socketTimeout: 30000 });
   }
   await _smtp.sendMail({ from, to, subject, text: fullText, html, replyTo });
+}
+function explainMail(e) {
+  const m = String((e && (e.response || e.message)) || e);
+  if (/EAUTH|535|Authentication failed|Invalid login|5\.7\.8/i.test(m)) return 'Identifiant ou clé SMTP refusés : vérifiez SMTP_USER (identifiant Brevo xxxx@smtp-brevo.com) et SMTP_PASS (clé SMTP xsmtpsib-…), puis redéployez.';
+  if (/not yet activated|not activated|account.*(suspend|blocked)|5\.7\.0/i.test(m)) return 'Compte SMTP Brevo non activé ou suspendu : complétez le profil Brevo et attendez la validation, ou contactez le support Brevo.';
+  if (/unauthori[sz]ed ip|IP address|not authorised|not authorized/i.test(m)) return 'Adresse IP refusée par Brevo : désactivez « Blocage d\'adresses IP non autorisées » pour les clés SMTP.';
+  if (/sender|from address|not.*valid.*sender|unverified/i.test(m)) return 'Expéditeur refusé : l\'adresse de MAIL_FROM doit être un expéditeur vérifié dans Brevo.';
+  if (/ETIMEDOUT|ECONNREFUSED|ENOTFOUND|ESOCKET|ECONNECTION/i.test(m)) return 'Serveur SMTP injoignable : vérifiez SMTP_HOST (smtp-relay.brevo.com) et SMTP_PORT (587).';
+  return m.slice(0, 250);
 }
 async function sendTpl(ctx, a, subject, body, c) { await sendMail(ctx, a.email, fill(subject, a, c), fill(body, a, c), c); }
 async function addLog(modele, objet, refs, failed) {
@@ -167,7 +177,7 @@ async function submitAbstract(ctx, o) {
   await hSet(K.abs, a.ref, a);
   if (c.ackAuto !== false && mailReady()) {
     const t = (c.templates || []).find(x => x.trigger === 'ack') || ACK_FALLBACK;
-    try { await sendTpl(ctx, a, t.subject, t.body, c); } catch (e) { console.error('ack', e.message); }
+    try { await sendTpl(ctx, a, t.subject, t.body, c); } catch (e) { _smtp = null; console.error('ack', explainMail(e)); }
   }
   return { ref: a.ref };
 }
@@ -223,7 +233,7 @@ async function adminDecide(ctx, token, ref, decision, commentaire, note, mail) {
       await sendTpl(ctx, a, mail.subject, mail.body, c);
       a.notifie = 'oui – ' + nowIso();
       await addLog(mail.name || STATUS_LABEL[decision], fill(mail.subject, a, c), [ref], []);
-    } catch (e) { mailError = e.message; }
+    } catch (e) { mailError = explainMail(e); _smtp = null; }
   }
   await hSet(K.abs, ref, a);
   return Object.assign({}, a, mailError ? { mailError } : {});
@@ -240,10 +250,24 @@ async function adminSendMail(ctx, token, refs, subject, body, modele) {
   let sent = 0; const failed = [];
   for (const a of targets) {
     try { await sendTpl(ctx, a, subject, body, c); sent++; }
-    catch (e) { failed.push({ ref: a.ref, error: e.message }); }
+    catch (e) { failed.push({ ref: a.ref, error: explainMail(e) }); _smtp = null; }
   }
   await addLog(modele || 'Message libre', subject, targets.map(a => a.ref), failed);
   return { sent, failed, quota: null };
+}
+async function adminTestMail(ctx, token, to) {
+  auth(token);
+  to = clean(to, 200);
+  if (!validEmail(to)) fail('Adresse e-mail de test non valide.');
+  const c = await cfg();
+  const info = { host: process.env.SMTP_HOST || '(Resend)', port: process.env.SMTP_PORT || '', user: process.env.SMTP_USER || '', from: process.env.MAIL_FROM || '' };
+  try {
+    await sendMail(ctx, to, 'Test d\'envoi – ' + c.short, 'Bonjour,\n\nCet e-mail de test confirme que la plateforme des résumés envoie correctement les messages.', c);
+    return { ok: true, info };
+  } catch (e) {
+    _smtp = null;
+    return { ok: false, error: explainMail(e), raw: String(e.message || e).slice(0, 300), info };
+  }
 }
 async function adminMarkRead(ctx, token, id) {
   auth(token);
@@ -266,7 +290,7 @@ async function adminReply(ctx, token, id, text) {
 }
 
 const ACTIONS = { getPublicConfig, submitAbstract, getStatus, sendContact, adminLogin, adminData,
-  adminSaveSettings, adminDecide, adminSendMail, adminMarkRead, adminReply };
+  adminSaveSettings, adminDecide, adminSendMail, adminMarkRead, adminReply, adminTestMail };
 
 /* ---------------- Handler Vercel ---------------- */
 module.exports = async (req, res) => {
