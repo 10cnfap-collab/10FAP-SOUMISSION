@@ -404,6 +404,9 @@ const LocalAPI={
   async adminSaveSettings(t,c){ store.set(LK.cfg,c); return true; },
   async adminDecide(t,ref,decision,commentaire,note,mail){ const L=store.get(LK.abs,[]); const a=L.find(x=>x.ref===ref); Object.assign(a,{decision,commentaire,note_interne:note,date_decision:new Date().toISOString()}); if(mail) a.notifie="oui (démo)"; store.set(LK.abs,L); return a; },
   async adminSendMail(t,refs,subject,body,modele){ const log=store.get(LK.log,[]); log.push({date:new Date().toISOString(),modele,objet:subject,nb:refs.length,refs:refs.join(", ")}); store.set(LK.log,log); return {sent:refs.length,failed:[],quota:null}; },
+  async adminUpdateAbstract(t,ref,o){ const L=store.get(LK.abs,[]); const a=L.find(x=>x.ref===ref); Object.assign(a,o,{modifie:new Date().toISOString()}); store.set(LK.abs,L); return a; },
+  async adminDeleteAbstract(t,ref){ store.set(LK.abs,store.get(LK.abs,[]).filter(x=>x.ref!==ref)); return {ok:true,ref}; },
+  async adminTestMail(){ return {ok:true,info:{}}; },
   async adminMarkRead(t,id){ const L=store.get(LK.msg,[]); const m=L.find(x=>x.id===id); if(m){m.lu="oui";store.set(LK.msg,L);} return true; },
   async adminReply(t,id,text){ const L=store.get(LK.msg,[]); const m=L.find(x=>x.id===id); Object.assign(m,{reponse:text,date_reponse:new Date().toISOString(),lu:"oui"}); store.set(LK.msg,L); return m; }
 };
@@ -722,13 +725,13 @@ function adminCfg(){
 function drawerHTML(a){
   const d=a.decision||"en_attente", tpl=CFG.templates.find(t=>t.trigger===d);
   return `<div class="scrim" id="scrim"><aside class="drawer" role="dialog" aria-modal="true" aria-label="Résumé ${esc(a.ref)}">
-    <div class="row"><span class="mono">${esc(a.ref)}</span>${chip(d)}<span class="spacer"></span><button class="btn ghost sm" id="d-mail">E-mail à l'auteur</button><button class="btn ghost sm" id="d-close">Fermer</button></div>
+    <div class="row"><span class="mono">${esc(a.ref)}</span>${chip(d)}<span class="spacer"></span><button class="btn ghost sm" id="d-edit">Modifier</button><button class="btn ghost sm" id="d-mail">E-mail à l'auteur</button><button class="btn ghost sm" id="d-close">Fermer</button></div>
     <div class="card abs"><span class="section-tag">${esc(a.thematique)} · ${esc(a.type_travail)}</span><h3 style="font-size:20px;margin:6px 0">${esc(a.titre)}</h3>
       <p class="small" style="white-space:pre-wrap">${esc(a.auteurs)}</p><p class="small" style="white-space:pre-wrap;margin-top:4px">${esc(a.affiliations)}</p>
       ${ABS_FIELDS.map((k,i)=>`<h4>${["Introduction","Matériel et méthodes","Résultats","Conclusion"][i]}</h4><p>${esc(a[k])}</p>`).join("")}<h4>Mots-clés</h4><p>${esc(a.motscles)}</p><p class="small mono" style="margin-top:12px">${totalWords(a)} mots</p></div>
     <div class="card"><dl class="dl"><dt>Auteur correspondant</dt><dd>${esc(a.prenom+" "+a.nom)}</dd><dt>E-mail</dt><dd>${esc(a.email)}</dd><dt>Téléphone</dt><dd>${esc(a.tel)}</dd>
       <dt>Statut</dt><dd>${esc(a.statut_pro)}</dd><dt>Établissement</dt><dd>${esc(a.etablissement)}</dd><dt>Wilaya</dt><dd>${esc(a.wilaya)}</dd><dt>Souhait</dt><dd>${esc(a.mode)}</dd>
-      <dt>Conflits d'intérêts</dt><dd>${esc(a.conflits)}</dd><dt>Reçu le</dt><dd>${esc(fmtDate(a.date))}</dd>${a.date_decision?`<dt>Dernière décision</dt><dd>${esc(fmtDate(a.date_decision))}${a.notifie?" · auteur notifié":""}</dd>`:""}</dl></div>
+      <dt>Conflits d'intérêts</dt><dd>${esc(a.conflits)}</dd><dt>Reçu le</dt><dd>${esc(fmtDate(a.date))}</dd>${a.modifie?`<dt>Modifié le</dt><dd>${esc(fmtDate(a.modifie))}</dd>`:""}${a.date_decision?`<dt>Dernière décision</dt><dd>${esc(fmtDate(a.date_decision))}${a.notifie?" · auteur notifié":""}</dd>`:""}</dl></div>
     <div class="card"><span class="q-label">Statut de la soumission</span>
       <div class="decide" style="margin-top:8px">${Object.keys(STATUS).map(k=>`<button class="dbtn s-${k}" data-dec="${k}" aria-pressed="${d===k}">${esc(STATUS[k].short==="Orale"?"Accepté – Orale":STATUS[k].short==="Poster"?"Accepté – Poster":STATUS[k].short)}</button>`).join("")}</div>
       <label class="q-label" for="d-com" style="margin-top:16px;font-size:14px">Message à l'auteur <span class="small">(inséré dans l'e-mail via {{commentaire}})</span></label>
@@ -736,7 +739,10 @@ function drawerHTML(a){
       <label class="q-label" for="d-note" style="margin-top:12px;font-size:14px">Note interne du comité</label><textarea class="box-input" id="d-note" rows="2" placeholder="Non visible par l'auteur">${esc(a.note_interne)}</textarea>
       <label class="opt" style="margin-top:12px"><input type="checkbox" id="d-notify"${CFG.notifyDefault?" checked":""}><span id="d-notify-l"></span></label>
       <div id="d-prev" style="margin-top:12px"></div>
-      <div class="row" style="margin-top:14px"><button class="btn" id="d-save">Enregistrer</button><button class="btn text" id="d-toggle">Voir l'e-mail</button></div></div></aside></div>`;
+      <div class="row" style="margin-top:14px"><button class="btn" id="d-save">Enregistrer</button><button class="btn text" id="d-toggle">Voir l'e-mail</button></div></div>
+    <div class="card" style="border-color:var(--danger)"><span class="q-label" style="font-size:15px">Supprimer ce résumé</span>
+      <p class="small" style="margin:2px 0 10px">Le résumé disparaît de la liste et des statistiques. Aucun e-mail n'est envoyé à l'auteur.</p>
+      <div id="d-delzone"><button class="btn ghost sm" id="d-del" style="color:var(--danger);border-color:var(--danger)">Supprimer le résumé</button></div></div></aside></div>`;
 }
 
 /* ================== BINDINGS ================== */
@@ -883,6 +889,36 @@ function exportCSV(){
   const u=URL.createObjectURL(blob), l=document.createElement("a"); l.href=u; l.download="resumes-congres-fap-"+new Date().toISOString().slice(0,10)+".csv"; document.body.appendChild(l); l.click(); l.remove(); setTimeout(()=>URL.revokeObjectURL(u),2000);
   toast(S.data.abstracts.length+" résumés exportés.");
 }
+const EDIT_FIELDS=[["titre","Titre","text"],["auteurs","Auteurs","area",2],["affiliations","Affiliations","area",2],["thematique","Thématique","sel"],["type_travail","Nature du travail","sel"],["mode","Présentation souhaitée","sel"],
+  ["introduction","Introduction et objectif","area",4],["methodes","Matériel et méthodes","area",5],["resultats","Résultats","area",6],["conclusion","Conclusion","area",4],["motscles","Mots-clés","text"],
+  ["nom","Nom","text"],["prenom","Prénom","text"],["email","E-mail","text"],["tel","Téléphone","text"],["statut_pro","Statut professionnel","text"],["etablissement","Établissement","text"],["wilaya","Wilaya","sel"],["conflits","Conflits d'intérêts","text"]];
+function editOptions(k){ return k==="thematique"?CFG.themes:k==="type_travail"?["Travail original","Cas clinique","Revue de la littérature / mise au point"]:k==="mode"?["Communication orale","Poster","Indifférent"]:k==="wilaya"?WILAYAS:[]; }
+function editHTML(a){
+  return `<div class="scrim" id="scrim"><aside class="drawer" role="dialog" aria-modal="true" aria-label="Modifier ${esc(a.ref)}">
+    <div class="row"><span class="mono">${esc(a.ref)}</span><b>Modification du résumé</b><span class="spacer"></span><button class="btn ghost sm" id="e-cancel">Annuler</button></div>
+    <div class="card" style="display:flex;flex-direction:column;gap:14px">
+    ${EDIT_FIELDS.map(([k,l,t,r])=>{ const v=a[k]??""; const id="e-"+k;
+      if(t==="area") return `<div class="field"><label for="${id}">${l}</label><textarea class="box-input" id="${id}" data-e="${k}" rows="${r}">${esc(v)}</textarea></div>`;
+      if(t==="sel"){ const o=editOptions(k); const opts=(o.includes(v)?o:[v,...o]); return `<div class="field"><label for="${id}">${l}</label><select class="box" id="${id}" data-e="${k}">${opts.map(x=>`<option${x===v?" selected":""}>${esc(x)}</option>`).join("")}</select></div>`; }
+      return `<div class="field"><label for="${id}">${l}</label><input class="box" id="${id}" data-e="${k}" value="${esc(v)}"></div>`; }).join("")}
+    <p class="small mono" id="e-wc" style="margin:0"></p>
+    <div id="e-err"></div>
+    <div class="row"><button class="btn" id="e-save">Enregistrer les modifications</button><button class="btn ghost" id="e-cancel2">Annuler</button></div></div></aside></div>`;
+}
+function openEdit(a){
+  $("#layer").innerHTML=editHTML(a);
+  const read=()=>{ const o={}; $$("[data-e]").forEach(el=>o[el.dataset.e]=el.value); return o; };
+  const wc=()=>{ const n=totalWords(read()); const e=$("#e-wc"); e.textContent=`Résumé : ${n} / ${CFG.maxWords} mots`; e.style.color=n>CFG.maxWords?"var(--danger)":""; };
+  wc(); ABS_FIELDS.forEach(k=>$("#e-"+k).addEventListener("input",wc));
+  const back=()=>openDrawer(a.ref);
+  $("#e-cancel").onclick=back; $("#e-cancel2").onclick=back; $("#scrim").onclick=e=>{ if(e.target.id==="scrim") back(); };
+  $("#e-save").onclick=async()=>{ const o=read(),err=$("#e-err"),b=$("#e-save");
+    const empty=EDIT_FIELDS.find(([k])=>!String(o[k]||"").trim()); if(empty){ err.innerHTML=`<div class="notice bad">Le champ « ${esc(empty[1])} » est vide.</div>`; return; }
+    if(!validEmail(o.email)){ err.innerHTML=`<div class="notice bad">Adresse e-mail non valide.</div>`; return; }
+    b.disabled=true; b.textContent="Enregistrement…";
+    try{ const upd=await API.adminUpdateAbstract(S.token,a.ref,o); Object.assign(a,upd); render(); openDrawer(a.ref); toast(`${a.ref} modifié.`); }
+    catch(e){ err.innerHTML=`<div class="notice bad">${esc(e.message)}</div>`; b.disabled=false; b.textContent="Enregistrer les modifications"; } };
+}
 function openDrawer(ref){ const a=S.data.abstracts.find(x=>x.ref===ref); if(!a) return; $("#layer").innerHTML=drawerHTML(a); bindDrawer(a); $("#d-close").focus(); }
 function closeDrawer(){ $("#layer").innerHTML=""; document.removeEventListener("keydown",onEsc); }
 function onEsc(e){ if(e.key==="Escape") closeDrawer(); }
@@ -899,6 +935,13 @@ function bindDrawer(a){
   $("#d-com").addEventListener("input",()=>{ if(showPrev) refresh(); });
   $("#d-toggle").onclick=()=>{ showPrev=!showPrev; refresh(); };
   $("#d-mail").onclick=()=>{ closeDrawer(); S.comp=newComp([a.ref]); S.atab="com"; render(); };
+  $("#d-edit").onclick=()=>openEdit(a);
+  $("#d-del").onclick=()=>{ const z=$("#d-delzone");
+    z.innerHTML=`<div class="notice bad"><b>Supprimer définitivement ${esc(a.ref)} ?</b><br>« ${esc(a.titre)} »<div class="row" style="margin-top:10px"><button class="btn danger sm" id="d-delok">Oui, supprimer</button><button class="btn ghost sm" id="d-delno">Annuler</button></div></div>`;
+    $("#d-delno").onclick=()=>{ closeDrawer(); openDrawer(a.ref); };
+    $("#d-delok").onclick=async()=>{ const b=$("#d-delok"); b.disabled=true; b.textContent="Suppression…";
+      try{ await API.adminDeleteAbstract(S.token,a.ref); S.data.abstracts=S.data.abstracts.filter(x=>x.ref!==a.ref); S.sel.delete(a.ref); closeDrawer(); render(); toast(`${a.ref} supprimé.`); }
+      catch(e){ toast(e.message); b.disabled=false; b.textContent="Oui, supprimer"; } }; };
   $("#d-save").onclick=async()=>{ const d=dec(),t=CFG.templates.find(x=>x.trigger===d),send=$("#d-notify").checked&&t,btn=$("#d-save"); btn.disabled=true; btn.textContent="Enregistrement…";
     try{ const upd=await API.adminDecide(S.token,a.ref,d,$("#d-com").value,$("#d-note").value,send?{subject:t.subject,body:t.body,name:t.name}:null); Object.assign(a,upd); closeDrawer(); render();
       toast(upd.mailError?`${a.ref} enregistré, mais l'e-mail n'est pas parti : ${upd.mailError}`:`${a.ref} : ${STATUS[d].label}${send?(LIVE?" · e-mail envoyé":" · e-mail simulé (démo)"):""}`); }
