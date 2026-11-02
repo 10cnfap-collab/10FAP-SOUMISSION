@@ -35,8 +35,22 @@ const K = {
   log: `${NS}:log`, cfg: `${NS}:cfg`
 };
 const ABS_FIELDS = ['nom','prenom','email','tel','statut_pro','etablissement','wilaya','titre','type_travail',
-  'thematique','mode','auteurs','affiliations','introduction','methodes','resultats','conclusion','motscles','conflits','engagements'];
-const REQUIRED = ABS_FIELDS.filter(f => f !== 'engagements');
+  'thematique','mode','auteurs','affiliations','introduction','methodes','resultats','conclusion','motscles','conflits','engagements',
+  'whatsapp','bourse','age','lettre'];
+const OPTIONAL = ['engagements','whatsapp','bourse','age','lettre'];
+const REQUIRED = ABS_FIELDS.filter(f => !OPTIONAL.includes(f));
+function checkBourse(a, c) {
+  const B = Object.assign({ enabled: true, lettreMax: 500 }, c.bourse || {});
+  a.whatsapp = a.whatsapp === 'Oui' ? 'Oui' : a.whatsapp === 'Non' ? 'Non' : '';
+  a.bourse = B.enabled && a.bourse === 'Oui' ? 'Oui' : 'Non';
+  if (a.bourse === 'Oui') {
+    const n = Number(a.age);
+    if (!Number.isInteger(n) || n < 18 || n > 90) fail('Âge non valide pour la candidature à la bourse.');
+    if (!a.lettre) fail('La lettre de motivation est obligatoire pour candidater à la bourse.');
+    const w = words(a.lettre);
+    if (w > B.lettreMax) fail(`La lettre de motivation dépasse ${B.lettreMax} mots (${w}).`);
+  } else { a.lettre = ''; }
+}
 const STATUS_LABEL = { en_attente: 'En évaluation', revision: 'Révision demandée', orale: 'Accepté – Communication orale', poster: 'Accepté – Poster', refuse: 'Refusé' };
 const ACK_FALLBACK = {
   subject: 'Accusé de réception {{ref}} – {{congres_court}}',
@@ -165,15 +179,18 @@ async function submitAbstract(ctx, o) {
   o = o || {};
   const c = await cfg();
   if (!isOpen(c)) fail('Les soumissions sont closes.');
-  await rateLimit(ctx, 'sub', 8, 3600);
+  await rateLimit(ctx, 'sub', 30, 3600);
   const a = {};
-  ABS_FIELDS.forEach(f => a[f] = clean(o[f], f === 'titre' ? 300 : 4000));
+  ABS_FIELDS.forEach(f => a[f] = clean(o[f], f === 'titre' ? 300 : f === 'lettre' ? 8000 : 4000));
+  if (!a.whatsapp) fail('Indiquez si votre numéro est joignable sur WhatsApp.');
   REQUIRED.forEach(f => { if (!a[f]) fail('Champ obligatoire manquant : ' + f + '.'); });
   if (!validEmail(a.email)) fail('Adresse e-mail non valide.');
   const n = words(a.introduction) + words(a.methodes) + words(a.resultats) + words(a.conclusion);
   if (n > c.maxWords) fail(`Le résumé dépasse ${c.maxWords} mots (${n}).`);
+  checkBourse(a, c);
   a.ref = PREFIX + pad(await db().incr(K.absSeq));
-  Object.assign(a, { email: a.email.toLowerCase(), date: nowIso(), decision: 'en_attente', commentaire: '', note_interne: '', date_decision: '', notifie: '' });
+  Object.assign(a, { email: a.email.toLowerCase(), date: nowIso(), decision: 'en_attente', commentaire: '', note_interne: '', date_decision: '', notifie: '',
+    bourse_note: '', bourse_orig: '', bourse_statut: '', bourse_notifie: '' });
   await hSet(K.abs, a.ref, a);
   if (c.ackAuto !== false && mailReady()) {
     const t = (c.templates || []).find(x => x.trigger === 'ack') || ACK_FALLBACK;
@@ -238,7 +255,7 @@ async function adminDecide(ctx, token, ref, decision, commentaire, note, mail) {
   await hSet(K.abs, ref, a);
   return Object.assign({}, a, mailError ? { mailError } : {});
 }
-async function adminSendMail(ctx, token, refs, subject, body, modele) {
+async function adminSendMail(ctx, token, refs, subject, body, modele, mark) {
   auth(token);
   if (!Array.isArray(refs) || !refs.length) fail('Aucun destinataire.');
   if (refs.length > 50) fail('50 destinataires maximum par lot.');
@@ -249,7 +266,10 @@ async function adminSendMail(ctx, token, refs, subject, body, modele) {
   const targets = refs.map(r => parse(Array.isArray(list) ? list[refs.indexOf(r)] : list[r])).filter(Boolean);
   let sent = 0; const failed = [];
   for (const a of targets) {
-    try { await sendTpl(ctx, a, subject, body, c); sent++; }
+    try {
+      await sendTpl(ctx, a, subject, body, c); sent++;
+      if (mark === 'bourse') { a.bourse_notifie = nowIso(); await hSet(K.abs, a.ref, a); }
+    }
     catch (e) { failed.push({ ref: a.ref, error: explainMail(e) }); _smtp = null; }
   }
   await addLog(modele || 'Message libre', subject, targets.map(a => a.ref), failed);
@@ -261,13 +281,31 @@ async function adminUpdateAbstract(ctx, token, ref, o) {
   if (!a) fail('Résumé introuvable : ' + ref);
   o = o || {};
   const editable = ABS_FIELDS.filter(f => f !== 'engagements');
-  editable.forEach(f => { if (f in o) a[f] = clean(o[f], f === 'titre' ? 300 : 4000); });
+  editable.forEach(f => { if (f in o) a[f] = clean(o[f], f === 'titre' ? 300 : f === 'lettre' ? 8000 : 4000); });
+  checkBourse(a, await cfg());
   REQUIRED.forEach(f => { if (!a[f]) fail('Champ obligatoire vide : ' + f + '.'); });
   if (!validEmail(a.email)) fail('Adresse e-mail non valide.');
   a.email = a.email.toLowerCase();
   a.modifie = nowIso();
   await hSet(K.abs, ref, a);
   return a;
+}
+async function adminBourseSave(ctx, token, updates) {
+  auth(token);
+  if (!Array.isArray(updates) || !updates.length) fail('Aucune modification.');
+  if (updates.length > 500) fail('Trop de modifications en une fois.');
+  const num = (v, label) => { v = String(v == null ? '' : v).trim(); if (v === '') return ''; const n = Number(v); if (!(n >= 0 && n <= 10)) fail(label + ' : note de 0 à 10.'); return String(Math.round(n * 2) / 2); };
+  const out = [];
+  for (const u of updates) {
+    const a = await hGet(K.abs, String(u.ref || ''));
+    if (!a) continue;
+    if ('bourse_note' in u) a.bourse_note = num(u.bourse_note, 'Note du comité');
+    if ('bourse_orig' in u) a.bourse_orig = num(u.bourse_orig, 'Originalité');
+    if ('bourse_statut' in u) { if (!['', 'retenu', 'attente', 'non_retenu'].includes(u.bourse_statut)) fail('Décision bourse inconnue.'); a.bourse_statut = u.bourse_statut; }
+    await hSet(K.abs, a.ref, a);
+    out.push(a);
+  }
+  return out;
 }
 async function adminDeleteAbstract(ctx, token, ref) {
   auth(token);
@@ -313,7 +351,7 @@ async function adminReply(ctx, token, id, text) {
 }
 
 const ACTIONS = { getPublicConfig, submitAbstract, getStatus, sendContact, adminLogin, adminData,
-  adminSaveSettings, adminDecide, adminSendMail, adminMarkRead, adminReply, adminTestMail, adminUpdateAbstract, adminDeleteAbstract };
+  adminSaveSettings, adminDecide, adminSendMail, adminMarkRead, adminReply, adminTestMail, adminUpdateAbstract, adminDeleteAbstract, adminBourseSave };
 
 /* ---------------- Handler Vercel ---------------- */
 module.exports = async (req, res) => {
